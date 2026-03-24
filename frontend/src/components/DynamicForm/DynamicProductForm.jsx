@@ -197,8 +197,8 @@ export default function DynamicProductForm({ onSubmit, defaultValues = {}, isLoa
           <div className="flex flex-col gap-1">
             <label htmlFor="status" className="label">Status</label>
             <select id="status" className="input" {...register('status')}>
-              <option value="draft">Draft</option>
               <option value="published">Published</option>
+              <option value="draft">Draft</option>
               <option value="archived">Archived</option>
             </select>
           </div>
@@ -308,7 +308,7 @@ function buildFormDefaults(product) {
     description:    product.description    || '',
     price:          product.price          ?? '',
     stock:          product.stock          ?? 0,
-    status:         product.status         || 'draft',
+    status:         product.status         || 'published',
     highlights_raw: highlights,
     images_raw:     images,
     attributes:     {},
