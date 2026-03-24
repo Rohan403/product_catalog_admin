@@ -105,6 +105,22 @@ async function searchProducts({
   limit      = 20,
   sortBy     = 'relevance',
 } = {}) {
+  try {
+    return await searchProductsOpenSearch({ q, categoryId, filters, page, limit, sortBy });
+  } catch (err) {
+    logger.warn(`[Search] OpenSearch unavailable, falling back to MongoDB: ${err.message}`);
+    return searchProductsMongo({ q, categoryId, page, limit, sortBy });
+  }
+}
+
+async function searchProductsOpenSearch({
+  q          = '',
+  categoryId = null,
+  filters    = {},
+  page       = 1,
+  limit      = 20,
+  sortBy     = 'relevance',
+} = {}) {
   const from  = (page - 1) * limit;
   const musts = [{ term: { is_active: true } }, { term: { status: 'published' } }];
 
@@ -162,6 +178,40 @@ async function searchProducts({
   return formatSearchResponse(response.body, page, limit);
 }
 
+/**
+ * MongoDB fallback for product search when OpenSearch is unavailable.
+ */
+async function searchProductsMongo({ q, categoryId, page, limit, sortBy }) {
+  const Product = require('../models/Product');
+  const mongoQuery = { status: 'published', is_active: true };
+  if (categoryId) mongoQuery.category_id = categoryId;
+  if (q && q.trim()) {
+    const regex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    mongoQuery.$or = [{ name: regex }, { description: regex }];
+  }
+
+  const sortMap = {
+    price_asc:  { price:  1 },
+    price_desc: { price: -1 },
+    newest:     { createdAt: -1 },
+    relevance:  { createdAt: -1 },
+  };
+  const mongoSort = sortMap[sortBy] || { createdAt: -1 };
+  const skip  = (page - 1) * limit;
+  const [products, total] = await Promise.all([
+    Product.find(mongoQuery).sort(mongoSort).skip(skip).limit(limit).lean(),
+    Product.countDocuments(mongoQuery),
+  ]);
+
+  return {
+    products:    products.map((p) => ({ ...p, id: p._id.toString() })),
+    total,
+    page,
+    total_pages: Math.ceil(total / limit),
+    facets:      {},
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DYNAMIC FILTERS  (for the filter sidebar)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,12 +233,23 @@ async function getFilterOptions(categoryId) {
     .map((a) => ({ ...a, category_name: category.name }));
   if (!attrs.length) return [];
 
-  // Step 2: for each attribute, get available value counts from OpenSearch
-  const filterOptions = await Promise.all(
-    attrs.map((attr) => resolveFilterOption(attr, categoryId)),
-  );
-
-  return filterOptions.filter(Boolean);
+  try {
+    // Step 2: for each attribute, get available value counts from OpenSearch
+    const filterOptions = await Promise.all(
+      attrs.map((attr) => resolveFilterOption(attr, categoryId)),
+    );
+    return filterOptions.filter(Boolean);
+  } catch (err) {
+    logger.warn(`[Search] OpenSearch unavailable for filters, returning attribute definitions: ${err.message}`);
+    // Fallback: return attribute definitions with options from the category schema
+    return attrs.map((attr) => ({
+      name:           attr.name,
+      label:          attr.label,
+      attribute_type: attr.attribute_type,
+      unit:           attr.unit,
+      options:        attr.options || [],
+    }));
+  }
 }
 
 /**
@@ -294,34 +355,64 @@ async function resolveFilterOption(attr, categoryId) {
 async function getSuggestions(q, size = 8) {
   if (!q || q.trim().length < 1) return [];
 
-  const response = await osClient.search({
-    index: INDEX_PRODUCTS,
-    body: {
-      size,
-      _source: ['name', 'slug', 'category_name'],
-      query: {
-        bool: {
-          must: [
-            { term: { is_active: true } },
-            { term: { status: 'published' } },
-            {
-              multi_match: {
-                query:    q.trim(),
-                fields:   ['name^2', 'description'],
-                type:     'phrase_prefix',
+  try {
+    const response = await osClient.search({
+      index: INDEX_PRODUCTS,
+      body: {
+        size,
+        _source: ['name', 'slug', 'category_name'],
+        query: {
+          bool: {
+            must: [
+              { term: { is_active: true } },
+              { term: { status: 'published' } },
+              {
+                multi_match: {
+                  query:    q.trim(),
+                  fields:   ['name^2', 'description'],
+                  type:     'phrase_prefix',
+                },
               },
-            },
-          ],
+            ],
+          },
         },
       },
-    },
-  });
+    });
 
-  return (response.body.hits?.hits || []).map((h) => ({
-    id:            h._source.id || h._id,
-    name:          h._source.name,
-    slug:          h._source.slug,
-    category_name: h._source.category_name,
+    return (response.body.hits?.hits || []).map((h) => ({
+      id:            h._source.id || h._id,
+      name:          h._source.name,
+      slug:          h._source.slug,
+      category_name: h._source.category_name,
+    }));
+  } catch (err) {
+    logger.warn(`[Search] OpenSearch unavailable for suggestions, falling back to MongoDB: ${err.message}`);
+    return getSuggestionsMongo(q, size);
+  }
+}
+
+/**
+ * MongoDB fallback for suggestions when OpenSearch is unavailable.
+ */
+async function getSuggestionsMongo(q, size = 8) {
+  const Product  = require('../models/Product');
+  const Category = require('../models/Category');
+  const regex    = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+  const products = await Product.find(
+    { name: regex, status: 'published', is_active: true },
+    { name: 1, slug: 1, category_id: 1 },
+  ).limit(size).lean();
+
+  const categoryIds = [...new Set(products.map((p) => p.category_id?.toString()).filter(Boolean))];
+  const categories  = await Category.find({ _id: { $in: categoryIds } }, { name: 1 }).lean();
+  const catMap      = Object.fromEntries(categories.map((c) => [c._id.toString(), c.name]));
+
+  return products.map((p) => ({
+    id:            p._id.toString(),
+    name:          p.name,
+    slug:          p.slug,
+    category_name: catMap[p.category_id?.toString()] || null,
   }));
 }
 
