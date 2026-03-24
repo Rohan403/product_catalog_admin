@@ -7,7 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'https://product-catalog-admin-bvpv-rohan403s-projects.vercel.app',
         changeOrigin: true,
       },
     },

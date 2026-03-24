@@ -6,7 +6,7 @@ import axios from 'axios';
 import { toast } from 'react-toastify';
 
 const axiosInstance = axios.create({
-  baseURL:        '/api',
+  baseURL:        'https://product-catalog-admin-bvpv-rohan403s-projects.vercel.app/api',
   timeout:        15000,
   headers: {
     'Content-Type': 'application/json',
