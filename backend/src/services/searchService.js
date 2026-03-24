@@ -212,9 +212,7 @@ async function searchProductsMongo({ q, categoryId, page, limit, sortBy }) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // DYNAMIC FILTERS  (for the filter sidebar)
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Build dynamic filter options for a given category.
@@ -416,9 +414,7 @@ async function getSuggestionsMongo(q, size = 8) {
   }));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 
 function buildNestedAttributeFilters(filters) {
   const clauses = [];
