@@ -182,12 +182,19 @@ async function searchProductsOpenSearch({
  * MongoDB fallback for product search when OpenSearch is unavailable.
  */
 async function searchProductsMongo({ q, categoryId, page, limit, sortBy }) {
-  const Product = require('../models/Product');
+  const Product  = require('../models/Product');
+  const Category = require('../models/Category');
   const mongoQuery = { status: 'published', is_active: true };
-  if (categoryId) mongoQuery.category_id = categoryId;
+
+  // category_id is stored as ObjectId — must convert or Mongoose won't match
+  if (categoryId && mongoose.Types.ObjectId.isValid(categoryId)) {
+    mongoQuery.category_id = new mongoose.Types.ObjectId(categoryId);
+  }
+
   if (q && q.trim()) {
-    const regex = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    mongoQuery.$or = [{ name: regex }, { description: regex }];
+    const escaped = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex   = new RegExp(escaped, 'i');
+    mongoQuery.$or = [{ name: regex }, { description: regex }, { highlights: regex }];
   }
 
   const sortMap = {
@@ -198,13 +205,30 @@ async function searchProductsMongo({ q, categoryId, page, limit, sortBy }) {
   };
   const mongoSort = sortMap[sortBy] || { createdAt: -1 };
   const skip  = (page - 1) * limit;
-  const [products, total] = await Promise.all([
-    Product.find(mongoQuery).sort(mongoSort).skip(skip).limit(limit).lean(),
+
+  const [rawProducts, total] = await Promise.all([
+    Product.find(mongoQuery)
+      .populate('category_id', 'name slug')
+      .sort(mongoSort)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
     Product.countDocuments(mongoQuery),
   ]);
 
+  const products = rawProducts.map((p) => {
+    const cat = p.category_id;
+    return {
+      ...p,
+      id:            p._id.toString(),
+      category_id:   cat?._id?.toString() || cat?.toString(),
+      category_name: cat?.name  || null,
+      category_slug: cat?.slug  || null,
+    };
+  });
+
   return {
-    products:    products.map((p) => ({ ...p, id: p._id.toString() })),
+    products,
     total,
     page,
     total_pages: Math.ceil(total / limit),
